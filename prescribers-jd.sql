@@ -31,14 +31,15 @@ SELECT
 		specialty_description, 
 		SUM(total_claim_count) AS most_claims
 FROM 
-		prescription INNER JOIN prescriber ON prescriber.npi = prescription.npi
+		prescription INNER JOIN prescriber 
+		ON prescriber.npi = prescription.npi
 GROUP BY specialty_description
 ORDER BY most_claims DESC
 LIMIT 1;
 
 
 -- b. Which specialty had the most total number of claims for opioids? 
--- Nurse Practitioner with 900845
+-- Nurse Practitioner with 900845, idk how I got a different number of claims.
 
 
 SELECT 
@@ -52,43 +53,70 @@ GROUP BY specialty_description
 ORDER BY most_claims DESC
 LIMIT 1;
 
--- c. Challenge Question: Are there any specialties that appear in the prescriber 
--- table that have no associated prescriptions in the prescription table? I think the answer is no, but my code here is a mess. 
 
-
-WITH filter_table AS (
-SELECT DISTINCT
-	specialty_description,
-	COUNT(npi) AS count_npi
-FROM 
-	prescriber
-WHERE 
-	npi IN (
-			SELECT DISTINCT npi
-			FROM prescription
-	)
+SELECT 
+	specialty_description
+	,SUM(total_claim_count) AS total_claims
+FROM prescriber
+	INNER JOIN prescription
+		USING (npi)
+	INNER JOIN drug 
+		USING (drug_name)
+WHERE opioid_drug_flag = 'Y'
 GROUP BY specialty_description
-ORDER BY count_npi
-)
-SELECT specialty_description, count_npi
-FROM prescriber LEFT JOIN filter_table
-	USING (specialty_description)
-ORDER BY count_npi;
+ORDER BY total_claims DESC
+LIMIT 1;
+	
+-- c. Challenge Question: Are there any specialties that appear in the prescriber 
+-- table that have no associated prescriptions in the prescription table?
+
+
+SELECT 
+	specialty_description
+	,SUM(total_claim_count) AS total_claims
+	FROM prescriber
+	LEFT JOIN prescription
+	USING (npi)
+	GROUP BY specialty_description
+	HAVING SUM(total_claim_count) IS NULL;
+
+	-- d. Difficult Bonus: Do not attempt until you have solved all other problems!
+	-- For each specialty, report the percentage of total claims by that specialty 
+	-- which are for opioids.
+	-- Which specialties have a high percentage of opioids?
+
+SELECT 
+	specialty_description,
+	ROUND((SUM(CASE WHEN opioid_drug_flag = 'Y' THEN total_claim_count END)/
+	SUM(total_claim_count)), 2) * 100
+		AS percent_opioid
+FROM prescriber
+LEFT JOIN prescription
+USING (npi)
+LEFT JOIN drug
+USING (drug_name)
+GROUP BY specialty_description
+ORDER BY percent_opioid DESC NULLS LAST;
 
 -- a. Which drug (generic_name) had the highest total drug cost? Insulin
 
-SELECT generic_name, SUM(total_drug_cost) AS pricey
-FROM prescription INNER JOIN drug ON prescription.drug_name = drug.drug_name
+SELECT generic_name, 
+		SUM(total_drug_cost)::MONEY AS pricey
+FROM prescription 
+INNER JOIN drug 
+	USING (drug_name)
 GROUP BY generic_name
 ORDER BY pricey DESC
 LIMIT 1;
 
--- Which drug (generic_name) has the hightest total cost per day? LEDIPASVIR/SOFOSBUVIR
+-- Which drug (generic_name) has the hightest total cost per day? C1 ESTERASE INHIBITOR
 
 SELECT generic_name, 
-		(ROUND(SUM(total_drug_cost)/total_day_supply, 2)) AS per_day_cost
-FROM prescription INNER JOIN drug ON prescription.drug_name = drug.drug_name
-GROUP BY generic_name, total_day_supply
+		(SUM(total_drug_cost)/SUM(total_day_supply))::MONEY AS per_day_cost
+FROM prescription 
+INNER JOIN drug 
+	USING(drug_name)
+GROUP BY generic_name
 ORDER BY per_day_cost DESC
 LIMIT 1;
 
@@ -152,12 +180,27 @@ FROM antibiotic_expense;
 
 
 
+-- Far better version, I overcomplicated everything
+
+SELECT 
+		CASE WHEN opioid_drug_flag = 'Y' THEN 'opioid'
+			WHEN antibiotic_drug_flag = 'Y' THEN 'antibiotic'
+			ELSE 'neither' 
+			END drug_type,
+			SUM(total_drug_cost)::MONEY AS total_cost
+FROM drug
+INNER JOIN prescription
+USING (drug_name)
+GROUP BY drug_type
+ORDER BY total_cost DESC;
+
+
 -- a. How many CBSAs are in Tennessee? 
 -- Warning: The cbsa table contains information for all states, not just Tennessee.
 
-SELECT COUNT(cbsa.cbsa) AS count_cbsa, fips_county.state
+SELECT COUNT(DISTINCT cbsa) AS count_cbsa, fips_county.state
 FROM CBSA INNER JOIN fips_county
-	ON cbsa.fipscounty = fips_county.fipscounty
+	USING (fipscounty)
 WHERE fips_county.state = 'TN'
 GROUP BY fips_county.state;
 
@@ -168,22 +211,28 @@ GROUP BY fips_county.state;
 -- Max: "Nashville-Davidson--Murfreesboro--Franklin, TN" with 1,830,410
 -- Min: "Morristown, TN" with 116,352
 
-SELECT SUM(population) AS total_pop, cbsaname
-FROM population INNER JOIN cbsa
-	ON population.fipscounty = cbsa.fipscounty
+SELECT 
+		SUM(population) AS total_pop, 
+		cbsaname
+FROM population 
+INNER JOIN cbsa
+	USING (fipscounty)
 GROUP BY cbsaname
 ORDER BY total_pop DESC;
 
 -- c. What is the largest (in terms of population) county which is not included in a CBSA? 
 -- Report the county name and population. SHELBY with 937847
 
-SELECT SUM(population) AS total_pop, county
-FROM population INNER JOIN cbsa
-	ON population.fipscounty = cbsa.fipscounty
-	INNER JOIN fips_county
-		ON population.fipscounty = fips_county.fipscounty
+SELECT county, MAX(population) AS max_pop
+FROM fips_county
+LEFT JOIN cbsa
+	USING (fipscounty)
+INNER JOIN population
+	USING (fipscounty)
+WHERE cbsa IS NULL
 GROUP BY county
-ORDER BY total_pop DESC;
+ORDER BY max_pop DESC;
+
 
  -- Find all rows in the prescription table where total_claims is at least 3000. 
  -- Report the drug_name and the total_claim_count.
@@ -196,23 +245,25 @@ WHERE total_claim_count >= 3000;
 -- add a column that indicates whether the drug is an opioid.
 
 SELECT prescription.drug_name, total_claim_count, opioid_drug_flag
-FROM prescription INNER JOIN drug
-	ON prescription.drug_name = drug.drug_name
+FROM prescription
+INNER JOIN drug
+	USING (drug_name)
 WHERE total_claim_count >= 3000;
 
  -- Add another column to you answer from the previous part which gives the prescriber
  -- first and last name associated with each row.
 
 
-SELECT prescription.drug_name, 
+SELECT drug_name, 
 		total_claim_count, 
 		opioid_drug_flag,
 		nppes_provider_first_name,
 		nppes_provider_last_org_name
-FROM prescription INNER JOIN drug
-	ON prescription.drug_name = drug.drug_name
-	INNER JOIN prescriber 
-		ON prescription.npi = prescriber.npi
+FROM prescription 
+INNER JOIN drug
+	USING (drug_name)
+INNER JOIN prescriber 
+	USING (npi)
 WHERE total_claim_count >= 3000;
 
 
